@@ -1,0 +1,1 @@
+python /home/lxc/projects/VideoInpainting/STTN/train.py -c=/home/lxc/projects/VideoInpainting/STTN/configs/gait.json 

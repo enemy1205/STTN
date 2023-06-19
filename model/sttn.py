@@ -66,15 +66,15 @@ class InpaintGenerator(BaseNetwork):
     def __init__(self, init_weights=True):
         super(InpaintGenerator, self).__init__()
         channel = 256
-        stack_num = 8
-        patchsize = [(108, 60), (36, 20), (18, 10), (9, 5)]
+        stack_num = 4
+        patchsize = [(4,4),(2,2)]
         blocks = []
         for _ in range(stack_num):
             blocks.append(TransformerBlock(patchsize, hidden=channel))
         self.transformer = nn.Sequential(*blocks)
 
         self.encoder = nn.Sequential(
-            nn.Conv2d(3, 64, kernel_size=3, stride=2, padding=1),
+            nn.Conv2d(1, 64, kernel_size=3, stride=2, padding=1),
             nn.LeakyReLU(0.2, inplace=True),
             nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1),
             nn.LeakyReLU(0.2, inplace=True),
@@ -92,21 +92,34 @@ class InpaintGenerator(BaseNetwork):
             nn.LeakyReLU(0.2, inplace=True),
             deconv(64, 64, kernel_size=3, padding=1),
             nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(64, 3, kernel_size=3, stride=1, padding=1)
+            nn.Conv2d(64, 1, kernel_size=3, stride=1, padding=1)
         )
 
         if init_weights:
             self.init_weights()
 
-    def forward(self, masked_frames, masks):
+    # def forward(self, masked_frames, masks):
+    #     # extracting features
+    #     b, t, c, h, w = masked_frames.size()
+    #     masks = masks.view(b*t, 1, h, w)
+    #     enc_feat = self.encoder(masked_frames.view(b*t, c, h, w))
+    #     _, c, h, w = enc_feat.size()
+    #     masks = F.interpolate(masks, scale_factor=1.0/4)
+    #     enc_feat = self.transformer(
+    #         {'x': enc_feat, 'm': masks, 'b': b, 'c': c})['x']
+    #     output = self.decoder(enc_feat)
+    #     output = torch.tanh(output)
+    #     return output
+
+    def forward(self, masks):
         # extracting features
-        b, t, c, h, w = masked_frames.size()
-        masks = masks.view(b*t, 1, h, w)
-        enc_feat = self.encoder(masked_frames.view(b*t, c, h, w))
+        b, t, c, h, w = masks.size()
+        masks = masks.view(b*t, c, h, w)
+        enc_feat = self.encoder(masks)
         _, c, h, w = enc_feat.size()
         masks = F.interpolate(masks, scale_factor=1.0/4)
         enc_feat = self.transformer(
-            {'x': enc_feat, 'm': masks, 'b': b, 'c': c})['x']
+            {'x': enc_feat,'b': b, 'c': c})['x']
         output = self.decoder(enc_feat)
         output = torch.tanh(output)
         return output
@@ -117,7 +130,7 @@ class InpaintGenerator(BaseNetwork):
         masks = F.interpolate(masks, scale_factor=1.0/4)
         t, c, _, _ = feat.size()
         enc_feat = self.transformer(
-            {'x': feat, 'm': masks, 'b': 1, 'c': c})['x']
+            {'x': feat, 'b': 1, 'c': c})['x']
         return enc_feat
 
 
@@ -143,10 +156,9 @@ class Attention(nn.Module):
     Compute 'Scaled Dot Product Attention
     """
 
-    def forward(self, query, key, value, m):
+    def forward(self, query, key, value):
         scores = torch.matmul(query, key.transpose(-2, -1)
                               ) / math.sqrt(query.size(-1))
-        scores.masked_fill(m, -1e9)
         p_attn = F.softmax(scores, dim=-1)
         p_val = torch.matmul(p_attn, value)
         return p_val, p_attn
@@ -171,7 +183,7 @@ class MultiHeadedAttention(nn.Module):
             nn.LeakyReLU(0.2, inplace=True))
         self.attention = Attention()
 
-    def forward(self, x, m, b, c):
+    def forward(self, x, b, c):
         bt, _, h, w = x.size()
         t = bt // b
         d_k = c // len(self.patchsize)
@@ -184,10 +196,6 @@ class MultiHeadedAttention(nn.Module):
                                                           _key, len(self.patchsize), dim=1),
                                                       torch.chunk(_value, len(self.patchsize), dim=1)):
             out_w, out_h = w // width, h // height
-            mm = m.view(b, t, 1, out_h, height, out_w, width)
-            mm = mm.permute(0, 1, 3, 5, 2, 4, 6).contiguous().view(
-                b,  t*out_h*out_w, height*width)
-            mm = (mm.mean(-1) > 0.5).unsqueeze(1).repeat(1, t*out_h*out_w, 1)
             # 1) embedding and reshape
             query = query.view(b, t, d_k, out_h, height, out_w, width)
             query = query.permute(0, 1, 3, 5, 2, 4, 6).contiguous().view(
@@ -206,7 +214,7 @@ class MultiHeadedAttention(nn.Module):
                 tmp1.append(y)
             y = torch.cat(tmp1,1)
             '''
-            y, _ = self.attention(query, key, value, mm)
+            y, _ = self.attention(query, key, value)
             # 3) "Concat" using a view and apply a final linear.
             y = y.view(b, t, out_h, out_w, d_k, height, width)
             y = y.permute(0, 1, 4, 2, 5, 3, 6).contiguous().view(bt, d_k, h, w)
@@ -243,10 +251,10 @@ class TransformerBlock(nn.Module):
         self.feed_forward = FeedForward(hidden)
 
     def forward(self, x):
-        x, m, b, c = x['x'], x['m'], x['b'], x['c']
-        x = x + self.attention(x, m, b, c)
+        x, b, c = x['x'], x['b'], x['c']
+        x = x + self.attention(x, b, c)
         x = x + self.feed_forward(x)
-        return {'x': x, 'm': m, 'b': b, 'c': c}
+        return {'x': x, 'b': b, 'c': c}
 
 
 # ######################################################################
@@ -254,11 +262,35 @@ class TransformerBlock(nn.Module):
 
 
 class Discriminator(BaseNetwork):
-    def __init__(self, in_channels=3, use_sigmoid=False, use_spectral_norm=True, init_weights=True):
+    def __init__(self, in_channels=1, use_sigmoid=False, use_spectral_norm=True, init_weights=True):
         super(Discriminator, self).__init__()
         self.use_sigmoid = use_sigmoid
         nf = 64
 
+        # self.conv = nn.Sequential(
+        #     spectral_norm(nn.Conv3d(in_channels=in_channels, out_channels=nf*1, kernel_size=(3, 5, 5), stride=(1, 2, 2),
+        #                             padding=1, bias=not use_spectral_norm), use_spectral_norm),
+        #     # nn.InstanceNorm2d(64, track_running_stats=False),
+        #     nn.LeakyReLU(0.2, inplace=True),
+        #     spectral_norm(nn.Conv3d(nf*1, nf*2, kernel_size=(3, 5, 5), stride=(1, 2, 2),
+        #                             padding=(1, 2, 2), bias=not use_spectral_norm), use_spectral_norm),
+        #     # nn.InstanceNorm2d(128, track_running_stats=False),
+        #     nn.LeakyReLU(0.2, inplace=True),
+        #     spectral_norm(nn.Conv3d(nf * 2, nf * 4, kernel_size=(3, 5, 5), stride=(1, 2, 2),
+        #                             padding=(1, 2, 2), bias=not use_spectral_norm), use_spectral_norm),
+        #     # nn.InstanceNorm2d(256, track_running_stats=False),
+        #     nn.LeakyReLU(0.2, inplace=True),
+        #     spectral_norm(nn.Conv3d(nf * 4, nf * 4, kernel_size=(3, 5, 5), stride=(1, 2, 2),
+        #                             padding=(1, 2, 2), bias=not use_spectral_norm), use_spectral_norm),
+        #     # nn.InstanceNorm2d(256, track_running_stats=False),
+        #     nn.LeakyReLU(0.2, inplace=True),
+        #     spectral_norm(nn.Conv3d(nf * 4, nf * 4, kernel_size=(3, 5, 5), stride=(1, 2, 2),
+        #                             padding=(1, 2, 2), bias=not use_spectral_norm), use_spectral_norm),
+        #     # nn.InstanceNorm2d(256, track_running_stats=False),
+        #     nn.LeakyReLU(0.2, inplace=True),
+        #     nn.Conv3d(nf * 4, nf * 4, kernel_size=(3, 5, 5),
+        #               stride=(1, 2, 2), padding=(1, 2, 2))
+        # )
         self.conv = nn.Sequential(
             spectral_norm(nn.Conv3d(in_channels=in_channels, out_channels=nf*1, kernel_size=(3, 5, 5), stride=(1, 2, 2),
                                     padding=1, bias=not use_spectral_norm), use_spectral_norm),
@@ -269,10 +301,6 @@ class Discriminator(BaseNetwork):
             # nn.InstanceNorm2d(128, track_running_stats=False),
             nn.LeakyReLU(0.2, inplace=True),
             spectral_norm(nn.Conv3d(nf * 2, nf * 4, kernel_size=(3, 5, 5), stride=(1, 2, 2),
-                                    padding=(1, 2, 2), bias=not use_spectral_norm), use_spectral_norm),
-            # nn.InstanceNorm2d(256, track_running_stats=False),
-            nn.LeakyReLU(0.2, inplace=True),
-            spectral_norm(nn.Conv3d(nf * 4, nf * 4, kernel_size=(3, 5, 5), stride=(1, 2, 2),
                                     padding=(1, 2, 2), bias=not use_spectral_norm), use_spectral_norm),
             # nn.InstanceNorm2d(256, track_running_stats=False),
             nn.LeakyReLU(0.2, inplace=True),
@@ -302,3 +330,36 @@ def spectral_norm(module, mode=True):
     if mode:
         return _spectral_norm(module)
     return module
+
+
+
+class NetA(nn.Module):
+    def __init__(self, nc=3, ndf=96):
+        super(NetA, self).__init__()
+        self.discriminator = nn.Sequential(
+            nn.Conv2d(nc*2, ndf, kernel_size=4, stride=2, padding=1,
+                      bias=False),
+            nn.LeakyReLU(0.2, True),
+
+            nn.Conv2d(ndf, ndf*2, kernel_size=4, stride=2, padding=1,
+                      bias=False),
+            nn.BatchNorm2d(ndf*2),
+            nn.LeakyReLU(0.2, True),
+
+            nn.Conv2d(ndf*2, ndf*4, kernel_size=4, stride=2, padding=1,
+                      bias=False),
+            nn.BatchNorm2d(ndf*4),
+            nn.LeakyReLU(0.2, True),
+
+            nn.Conv2d(ndf*4, ndf*8, kernel_size=4, stride=2, padding=1,
+                      bias=False),
+            nn.BatchNorm2d(ndf*8),
+            nn.LeakyReLU(0.2, True),
+
+            nn.Conv2d(ndf*8, 1, kernel_size=4, stride=4, bias=False),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        x = self.discriminator(x)
+        return x.view(-1, 1)

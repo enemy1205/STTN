@@ -1,0 +1,41 @@
+{
+    "seed": 2020,
+    "save_dir": "release_model/",
+    "gait_model_path": "/home/lxc/projects/OpenGait/output/CASIA-B/GaitSet/GaitSet/checkpoints/GaitSet-30000.pt",
+    "data_loader": {
+        "name": "multi_gait",
+        "data_root": "datasets/",
+        "w": 64,
+        "h": 64,
+        "train_csv_path": "path_csv/train_data_path.csv",
+        "video_len": 32,
+        "train_id_number": 62,
+        "sample_length": 5
+    },
+    "losses": {
+        "valid_weight": 1,
+        "gp_weight": 10,
+        "adversarial_weight": 0.01,
+        "imgloss_type": "L1",
+        "GAN_LOSS": "hinge"
+    },
+    "trainer": {
+        "type": "Adam",
+        "beta1": 0.3,
+        "beta2": 0.99,
+        "lr_g": 1e-3,
+        "lr_d": 1e-4,
+        "lr_a": 1e-3,
+        "lr": 1e-3,
+        "d2glr": 1, 
+        "batch_size": 8,
+        "num_workers": 2,
+        "verbosity": 2,
+        "log_step": 100,
+        "save_freq": 1e4,
+        "valid_freq": 1e4, 
+        "iterations": 20e3,
+        "niter": 30e4,
+        "niter_steady": 30e4
+    }
+}
