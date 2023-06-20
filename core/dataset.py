@@ -93,42 +93,6 @@ class TestDataset(tordata.Dataset):
         return len(self.label)
 
 
-
-def load_data(dataset_path, resolution, dataset, cache=False):
-    seq_dir = list()
-    view = list()
-    seq_type = list()
-    label = list()
-
-    for _label in sorted(list(os.listdir(dataset_path))):
-        # In CASIA-B, data of subject #5 is incomplete.
-        # Thus, we ignore it in training.
-        if dataset == 'CASIA-B' and _label == '005':
-            continue
-        label_path = osp.join(dataset_path, _label)
-        for _seq_type in sorted(list(os.listdir(label_path))):
-            seq_type_path = osp.join(label_path, _seq_type)
-            for _view in sorted(list(os.listdir(seq_type_path))):
-                _seq_dir = osp.join(seq_type_path, _view)
-                seqs = os.listdir(_seq_dir)
-                if len(seqs) > 0:
-                    seq_dir.append([_seq_dir])
-                    label.append(_label)
-                    seq_type.append(_seq_type)
-                    view.append(_view)
-
-    pid_list = sorted(list(set(label)))
-    test_list = pid_list
-
-    test_source = TestDataset(
-        [seq_dir[i] for i, l in enumerate(label) if l in test_list],
-        [label[i] for i, l in enumerate(label) if l in test_list],
-        [seq_type[i] for i, l in enumerate(label) if l in test_list],
-        [view[i] for i, l in enumerate(label) if l in test_list],
-        cache, resolution)
-
-    return test_source
-
 def gaitset_collate_fn(batch):
     sample_type = "all"
     frame_num = 30
@@ -187,22 +151,6 @@ def gaitset_collate_fn(batch):
     batch[0] = seqs
     return batch
 
-
-def gait_test_data_CASIA_B(dataset_path,batch_size,num_workers):
-    # 数据初始化
-    resolution = 64
-    dataset = "CASIA-B"
-    # print("Initializing data source...")
-    test_source = load_data(dataset_path, resolution, dataset, cache=False)
-    # print("Data initialization complete.")
-    test_data_loader = tordata.DataLoader(
-            dataset=test_source,
-            batch_size=batch_size,
-            sampler=tordata.sampler.SequentialSampler(test_source),
-            collate_fn=gaitset_collate_fn,
-            num_workers=num_workers)
-
-    return test_data_loader
 
 class MultiGaitDataset(torch.utils.data.Dataset):
     """MultiGaitDataset."""    

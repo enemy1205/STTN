@@ -1,14 +1,13 @@
 import os
 import cv2
-import time
+import random
 import math
 import glob
 from tqdm import tqdm
 import shutil
 import importlib
-import datetime
+import time
 import numpy as np
-from PIL import Image
 from math import log10
 
 from functools import partial
@@ -22,8 +21,8 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from tensorboardX import SummaryWriter
 from torchvision.utils import make_grid, save_image
 import torch.distributed as dist
-
-from core.dataset import TestDataset , MultiGaitDataset
+from core.eval import GaitEval
+from core.dataset import MultiGaitDataset
 from core.loss import AdversarialLoss,gradient_penalty,generate_gei
 
 
@@ -71,6 +70,11 @@ class Trainer():
             sampler=self.train_sampler,
             collate_fn=collate_fn)
         
+        # set eval model and dataset
+        eval_cfg = config['eval']
+        self.gait_eval = GaitEval(eval_cfg)
+        self.gait_model = gaitset_model_init(self.config['gait_model_path'])
+        self.gait_model = self.gait_model.to(self.config['device'])
 
         # set loss functions 
         self.adversarial_loss = AdversarialLoss(type=self.config['losses']['GAN_LOSS'])
@@ -78,8 +82,6 @@ class Trainer():
         self.l1_loss = nn.L1Loss().cuda()
         self.l2_loss = nn.MSELoss().cuda()
         
-        self.gait_model = gaitset_model_init(self.config['gait_model_path'])
-        self.gait_model = self.gait_model.to(self.config['device'])
         # setup models including generator and discriminator
         net = importlib.import_module('model.'+config['model'])
         self.netG = net.InpaintGenerator()
@@ -160,7 +162,7 @@ class Trainer():
             writer.add_scalar(name, self.summary[name]/100, self.iteration)
             self.summary[name] = 0
 
-    # load netG and netD
+    # load netG and netD and netA
     def load(self):
         model_path = self.config['save_dir']
         if os.path.isfile(os.path.join(model_path, 'latest.ckpt')):
@@ -195,14 +197,14 @@ class Trainer():
                     'Warnning: There is no trained model found. An initialized model will be used.')
 
     # save parameters every eval_epoch
-    def save(self, it):
+    def save(self, iter, rec_silt_video, gt_silt_video, occ_silt_video):
         if self.config['global_rank'] == 0:
             gen_path = os.path.join(
-                self.config['save_dir'], 'gen_{}.pth'.format(str(it).zfill(5)))
+                self.config['save_dir'], 'gen_{}.pth'.format(str(iter).zfill(5)))
             dis_path = os.path.join(
-                self.config['save_dir'], 'dis_{}.pth'.format(str(it).zfill(5)))
+                self.config['save_dir'], 'dis_{}.pth'.format(str(iter).zfill(5)))
             opt_path = os.path.join(
-                self.config['save_dir'], 'opt_{}.pth'.format(str(it).zfill(5)))
+                self.config['save_dir'], 'opt_{}.pth'.format(str(iter).zfill(5)))
             print('\nsaving model to {} ...'.format(gen_path))
             if isinstance(self.netG, torch.nn.DataParallel) or isinstance(self.netG, DDP):
                 netG = self.netG.module
@@ -216,8 +218,24 @@ class Trainer():
                         'iteration': self.iteration,
                         'optimG': self.optimG.state_dict(),
                         'optimD': self.optimD.state_dict()}, opt_path)
-            os.system('echo {} > {}'.format(str(it).zfill(5),
+            os.system('echo {} > {}'.format(str(iter).zfill(5),
                                             os.path.join(self.config['save_dir'], 'latest.ckpt')))
+            random_batch_index = random.randint(0,rec_silt_video.shape[0]-1)
+            video_len = self.config['data_loader']['video_len']
+            vid_rec = torch.Tensor(video_len,1,64,64)
+            vid_gt = torch.Tensor(video_len,1,64,64)
+            vid_occ = torch.Tensor(video_len,1,64,64)
+            for i in range(rec_silt_video[random_batch_index].shape[0]):
+                rec_img = rec_silt_video[random_batch_index][i,:,:,:]
+                gt_img = gt_silt_video[random_batch_index][i,:,:,:]
+                occ_img = occ_silt_video[random_batch_index][i,:,:,:]
+                vid_rec[i,:,:,:] = rec_img
+                vid_gt[i,:,:,:] = gt_img
+                vid_occ[i,:,:,:] = occ_img
+            grid = make_grid(torch.cat((vid_rec,vid_gt,vid_occ)))
+            figs_save_path = os.path.join(self.config['save_dir']+'/figs',str(self.config["train_id"]))
+            os.makedirs(figs_save_path,exist_ok=True)
+            save_image(grid, os.path.join(figs_save_path,f'{iter}.jpg'))
 
     # train entry
     def train(self):
@@ -225,6 +243,8 @@ class Trainer():
         pbar = range(int(self.train_args['iterations']))
         if self.config['global_rank'] == 0:
             pbar = tqdm(pbar, initial=self.iteration, dynamic_ncols=True, smoothing=0.01)
+        
+        # self.gait_eval.gt_eval(self.gait_model)
         
         while True:
             self.epoch += 1
@@ -340,8 +360,9 @@ class Trainer():
 
             # saving models
             if self.iteration % self.train_args['save_freq'] == 0:
-                self.save(int(self.iteration//self.train_args['save_freq']))
-                
+                self.save(int(self.iteration//self.train_args['save_freq']),pred_silt_video.view(b,t, c, h, w),\
+                    gt_silt_video.view(b,t, c, h, w),occ_silt_video)
+                # self.gait_eval.eval(self.netG,self.gait_model)
             if self.iteration > self.train_args['iterations']:
                 break
 

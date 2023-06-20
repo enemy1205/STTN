@@ -233,6 +233,19 @@ def random_move_control_points(X, Y, imageHeight, imageWidth, lineVelocity, regi
     new_Y = np.clip(Y, 0, imageWidth - region_width)
     return new_X, new_Y, lineVelocity
 
+def ts2var(x):
+    return torch.autograd.Variable(x).cuda()
+
+def np2var(x):
+    return ts2var(torch.from_numpy(x))
+
+def cuda_dist(x, y):
+    x = torch.from_numpy(x).cuda()
+    y = torch.from_numpy(y).cuda()
+    dist = torch.sum(x ** 2, 1).unsqueeze(1) + torch.sum(y ** 2, 1).unsqueeze(
+        1).transpose(0, 1) - 2 * torch.matmul(x, y.transpose(0, 1))
+    dist = torch.sqrt(F.relu(dist))
+    return dist
 
 
 # ##############################################
