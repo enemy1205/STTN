@@ -6,6 +6,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.models as models
+# import sys
+# sys.path.append('/home/lxc/projects/VideoInpainting/STTN')
 from core.spectral_norm import spectral_norm as _spectral_norm
 
 
@@ -92,7 +94,8 @@ class InpaintGenerator(BaseNetwork):
             nn.LeakyReLU(0.2, inplace=True),
             deconv(64, 64, kernel_size=3, padding=1),
             nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(64, 1, kernel_size=3, stride=1, padding=1)
+            nn.Conv2d(64, 1, kernel_size=3, stride=1, padding=1),
+            nn.LeakyReLU(0.2, inplace=True)
         )
 
         if init_weights:
@@ -117,11 +120,10 @@ class InpaintGenerator(BaseNetwork):
         masks = masks.view(b*t, c, h, w)
         enc_feat = self.encoder(masks)
         _, c, h, w = enc_feat.size()
-        masks = F.interpolate(masks, scale_factor=1.0/4)
+        # masks = F.interpolate(masks, scale_factor=1.0/4)
         enc_feat = self.transformer(
             {'x': enc_feat,'b': b, 'c': c})['x']
         output = self.decoder(enc_feat)
-        output = torch.tanh(output)
         return output
 
     def infer(self, feat, masks):
@@ -324,6 +326,7 @@ class Discriminator(BaseNetwork):
             feat = torch.sigmoid(feat)
         out = torch.transpose(feat, 1, 2)  # B, T, C, H, W
         return out
+    
 
 
 def spectral_norm(module, mode=True):
@@ -363,3 +366,13 @@ class NetA(nn.Module):
     def forward(self, x):
         x = self.discriminator(x)
         return x.view(-1, 1)
+    
+    
+if __name__ == "__main__":
+    import os
+    os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+    netG=InpaintGenerator().float()
+    netG.cuda()
+    input = torch.rand(1,32,1,64,64).cuda()
+    output = netG(input)
+    

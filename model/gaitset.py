@@ -199,16 +199,16 @@ class GaitSet(nn.Module):
 
     def forward(self, inputs):
         ipts, labs, _, _, seqL = inputs
-        sils = ipts[0]  # [n, s, h, w]
+        sils = ipts[0]  # sils [c, b*t 求和, h, w]
         if len(sils.size()) == 4:
-            sils = sils.unsqueeze(1)
+            sils = sils.unsqueeze(1)    # sils [c,1, b*t 求和, h, w]
 
         del ipts
-        outs = self.set_block1(sils)
-        gl = self.set_pooling(outs, seqL, options={"dim": 2})[0]
-        gl = self.gl_block2(gl)
+        outs = self.set_block1(sils)    # outs [c,num_bin=32, b*t 求和, h/2, w/2]
+        gl = self.set_pooling(outs, seqL, options={"dim": 2})[0] # gl [b,num_bin=32, h, w]
+        gl = self.gl_block2(gl) # gl [b,num_bin=64, h/2, w/2]
 
-        outs = self.set_block2(outs)
+        outs = self.set_block2(outs)     # outs [c,num_bin=64, b*t 求和, h/4, w/4]
         gl = gl + self.set_pooling(outs, seqL, options={"dim": 2})[0]
         gl = self.gl_block3(gl)
 
@@ -221,5 +221,31 @@ class GaitSet(nn.Module):
         feature2 = self.HPP(gl)  # [n, c, p]
         feature = torch.cat([feature1, feature2], -1)  # [n, c, p]
         embs = self.Head(feature)
+
+        return embs
+    
+    def infer(self, inputs):
+        seqL=None
+        inputs = inputs.unsqueeze(1)
+        x=inputs.permute(2,1,0,3,4)
+        del inputs
+
+        outs=self.set_block1(x)
+        gl=self.set_pooling(outs, seqL, options={"dim": 2})[0]
+        gl=self.gl_block2(gl)
+
+        outs=self.set_block2(outs)
+        gl=gl+self.set_pooling(outs, seqL, options={"dim": 2})[0]
+        gl=self.gl_block3(gl)
+
+        outs=self.set_block3(outs)
+        outs=self.set_pooling(outs, seqL, options={"dim": 2})[0]
+        gl=gl+outs
+
+        # Horizontal Pooling Matching, HPM
+        feature1=self.HPP(outs)  # [n, c, p]
+        feature2=self.HPP(gl)  # [n, c, p]
+        feature=torch.cat([feature1, feature2], -1)  # [n, c, p]
+        embs=self.Head(feature)
 
         return embs

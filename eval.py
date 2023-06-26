@@ -1,10 +1,11 @@
-from .dataset import TestDataset,gaitset_collate_fn
+from core.dataset import EvalDataset,gaitset_collate_fn
 from torch.utils.data import DataLoader,sampler
 import torch
 import os.path as osp
 import os
 import numpy as np
-from .utils import ts2var,np2var,cuda_dist
+import torch.nn.functional as F
+from core.utils import ts2var,np2var,cuda_dist
 
 def load_data(dataset_path, resolution, dataset, cache=False):
     seq_dir = list()
@@ -32,7 +33,7 @@ def load_data(dataset_path, resolution, dataset, cache=False):
     pid_list = sorted(list(set(label)))
     test_list = pid_list
 
-    test_source = TestDataset(
+    test_source = EvalDataset(
         [seq_dir[i] for i, l in enumerate(label) if l in test_list],
         [label[i] for i, l in enumerate(label) if l in test_list],
         [seq_type[i] for i, l in enumerate(label) if l in test_list],
@@ -116,9 +117,8 @@ class GaitEval:
                 batch_frame = np2var(batch_frame).int()
             x = seq, view, seq_type, label, batch_frame
             feature = gait_model(x)
-            n, num_bin, _ = feature.size()
-            # print(f'{i} ,:{n}')
-            feature_list.append(feature.view(n, -1).data.cpu().numpy())
+            b_s, c, num_bin = feature.size()
+            feature_list.append(feature.view(b_s, -1).data.cpu().numpy())
             view_list += view
             seq_type_list += seq_type
             label_list += label
@@ -137,17 +137,23 @@ class GaitEval:
         seq_type_list = list()
         label_list = list()
         for i, x in enumerate(self.eval_data_loader):
-            seq, view, seq_type, label, batch_frame = x
-            
-            for j in range(len(seq)):
-                seq[j] = np2var(seq[j]).float()
+            seqs, view, seq_type, label, batch_frame = x
+            seqs = np2var(seqs[0]).float()
+            seqs = F.pad(seqs,(10,10),'constant', 0)
             if batch_frame is not None:
                 batch_frame = np2var(batch_frame).int()
-            x = seq, view, seq_type, label, batch_frame
-            feature = gait_model(x)
-            n, num_bin, _ = feature.size()
+            # x = seq, view, seq_type, label, batch_frame
+            seqL = batch_frame[0].data.cpu().numpy().tolist()
+            start = [0] + np.cumsum(seqL).tolist()[:-1]
+            for curr_start, curr_seqL in zip(start, seqL):
+                narrowed_seq = seqs.narrow(1, curr_start, curr_seqL)
+                rec_seq = rec_model(narrowed_seq.unsqueeze(2))
+                rec_seq = rec_seq[:,:,:,10:-10]
+                # rec_seq : t , c , h , w
+                feature = gait_model.infer(rec_seq)
+                b_s, c, num_bin = feature.size()
             # print(f'{i} ,:{n}')
-            feature_list.append(feature.view(n, -1).data.cpu().numpy())
+                feature_list.append(feature.view(b_s, -1).data.cpu().numpy())
             view_list += view
             seq_type_list += seq_type
             label_list += label
@@ -155,3 +161,79 @@ class GaitEval:
         acc_CASIA_B = evaluation(feature_list,view_list,seq_type_list,label_list, self.dataset)
         acc_NM_mean, acc_BG_mean, acc_CL_mean = np.mean(acc_CASIA_B[0, :, :, 0]), np.mean(acc_CASIA_B[1, :, :, 0]), np.mean(acc_CASIA_B[2, :, :, 0])
         print(f"acc_NM_mean:{acc_NM_mean} , acc_BG_mean:{acc_BG_mean} , acc_CL_mean:{acc_CL_mean}")
+        
+    # def eval(self,rec_model,gait_model):
+    #     # 推理
+    #     import random
+    #     gait_model.eval()
+    #     feature_list = list()
+    #     view_list = list()
+    #     seq_type_list = list()
+    #     label_list = list()
+    #     for i, x in enumerate(self.eval_data_loader):
+    #         seqs, view, seq_type, label, batch_frame = x
+    #         seqs = np2var(seqs[0]).float()
+    #         seqs = F.pad(seqs,(10,10),'constant', 0)
+    #         if batch_frame is not None:
+    #             batch_frame = np2var(batch_frame).int()
+    #         # x = seq, view, seq_type, label, batch_frame
+    #         seqL = batch_frame[0].data.cpu().numpy().tolist()
+    #         start = [0] + np.cumsum(seqL).tolist()[:-1]
+    #         for curr_start, curr_seqL in zip(start, seqL):
+    #             narrowed_seq = seqs.narrow(1, curr_start, curr_seqL)
+    #             if curr_seqL < 32:
+    #                 for i in range(32 - curr_seqL):
+    #                     narrowed_seq=torch.cat((narrowed_seq,narrowed_seq[:,-1,:,:].unsqueeze(1)),dim=1)
+    #             else:
+    #                 split = random.randint(0, curr_seqL-32)
+    #                 narrowed_seq = narrowed_seq[:,split:split+32,:,:]            
+    #             rec_seq = rec_model(narrowed_seq.unsqueeze(2))
+    #             rec_seq = rec_seq[0,:,:,10:-10]
+    #             # rec_seq : t , c , h , w
+    #             feature = gait_model.infer(rec_seq)
+    #             b_s, c, num_bin = feature.size()
+    #         # print(f'{i} ,:{n}')
+    #             feature_list.append(feature.view(b_s, -1).data.cpu().numpy())
+    #         view_list += view
+    #         seq_type_list += seq_type
+    #         label_list += label
+    #     feature_list = np.concatenate(feature_list, 0)
+    #     acc_CASIA_B = evaluation(feature_list,view_list,seq_type_list,label_list, self.dataset)
+    #     acc_NM_mean, acc_BG_mean, acc_CL_mean = np.mean(acc_CASIA_B[0, :, :, 0]), np.mean(acc_CASIA_B[1, :, :, 0]), np.mean(acc_CASIA_B[2, :, :, 0])
+    #     print(f"acc_NM_mean:{acc_NM_mean} , acc_BG_mean:{acc_BG_mean} , acc_CL_mean:{acc_CL_mean}")
+
+
+
+
+if __name__ == "__main__":
+    import json
+    import sys
+    from model.gaitset import GaitSet
+    from model.sttn import InpaintGenerator
+    os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+   
+    
+    # loading configs
+    config = json.load(open('/home/lxc/projects/VideoInpainting/STTN/configs/gait.json'))
+    eval_cfg = config['eval']
+    config['device'] = 'cuda:0'
+    gait_model = GaitSet().float()
+    gait_model.eval()
+    gait_model.cuda()
+    ckpt = torch.load(config['gait_model_path'])['model']
+    gait_model.load_state_dict(ckpt)
+    gait_eval = GaitEval(eval_cfg)
+    gait_model = gait_model.to(config['device'])
+    rec_model = InpaintGenerator()
+    rec_model = rec_model.to(config['device'])
+    gait_eval.eval(rec_model,gait_model)
+    # rec_model = SimVP(shape_in=(32,1,64,64)).cuda()
+    # checkpoint_G = torch.load("/home/lxc/projects/GaitGan/checkpoints/train_simvp/2023-06-14-21-44-08_180_19367.pth")['modelG']
+    # new_checkpoint_G = {}
+    # for k, v in checkpoint_G.items():
+    #     new_k = k.replace('module.', '') if 'module' in k else k
+    #     new_checkpoint_G[new_k] = v
+    # rec_model.load_state_dict(new_checkpoint_G)
+    # gait_eval.eval(rec_model,gait_model)
+    
+    

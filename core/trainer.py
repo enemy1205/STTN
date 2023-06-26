@@ -21,8 +21,8 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from tensorboardX import SummaryWriter
 from torchvision.utils import make_grid, save_image
 import torch.distributed as dist
-from core.eval import GaitEval
-from core.dataset import MultiGaitDataset
+from eval import GaitEval
+from core.dataset import MultiGaitDataset,TestDataset
 from core.loss import AdversarialLoss,gradient_penalty,generate_gei
 
 
@@ -36,7 +36,14 @@ def gaitset_model_init(gaitset_checkpoint_path):
     
     return  gait_model
 
+def collate_fn_test(batch):
+    batch = list(filter(lambda x: x is not None, batch))
+    if len(batch) == 0:
+        batch = [torch.zeros([1, 1, 64, 64], dtype=torch.float64), torch.zeros([1, 1, 64, 64], dtype=torch.float64), torch.zeros([1, 1, 64, 64], dtype=torch.float64)]
+    return torch.utils.data.dataloader.default_collate(batch)
+
 def collate_fn(batch):
+    # todo 固定值32解决
     batch = list(filter(lambda x: x is not None, batch))
     for i in range(32 - len(batch)):
         batch.append(batch[-1])
@@ -57,6 +64,7 @@ class Trainer():
         self.train_dataset = MultiGaitDataset(data_cfg['train_csv_path'],data_cfg['video_len'],data_cfg['train_id_number'])
         self.train_sampler = None
         self.train_args = config['trainer']
+        self.eval_args = config['eval']
         if config['distributed']:
             self.train_sampler = DistributedSampler(
                 self.train_dataset,
@@ -69,6 +77,13 @@ class Trainer():
             num_workers=self.train_args['num_workers'],
             sampler=self.train_sampler,
             collate_fn=collate_fn)
+        self.test_dataset = TestDataset(data_cfg['valid_csv_path'],data_cfg['video_len'],data_cfg['valid_id_number'])
+        self.test_loader = DataLoader(
+            self.test_dataset,
+            batch_size=self.eval_args['batch_size'] // config['world_size'],
+            shuffle=False, 
+            num_workers=self.eval_args['num_workers'],
+            collate_fn=collate_fn_test)
         
         # set eval model and dataset
         eval_cfg = config['eval']
@@ -77,8 +92,8 @@ class Trainer():
         self.gait_model = self.gait_model.to(self.config['device'])
 
         # set loss functions 
-        self.adversarial_loss = AdversarialLoss(type=self.config['losses']['GAN_LOSS'])
-        self.adversarial_loss = self.adversarial_loss.to(self.config['device'])
+        # self.adversarial_loss = AdversarialLoss(type=self.config['losses']['GAN_LOSS'])
+        # self.adversarial_loss = self.adversarial_loss.to(self.config['device'])
         self.l1_loss = nn.L1Loss().cuda()
         self.l2_loss = nn.MSELoss().cuda()
         
@@ -101,8 +116,7 @@ class Trainer():
             betas=(self.config['trainer']['beta1'], self.config['trainer']['beta2']))
         self.optimA = torch.optim.Adam(
             self.netA.parameters(), 
-            lr=config['trainer']['lr'],
-            betas=(self.config['trainer']['beta1'], self.config['trainer']['beta2']))
+            lr=config['trainer']['lr_a'])
         self.load()
 
         if config['distributed']:
@@ -196,8 +210,42 @@ class Trainer():
                 print(
                     'Warnning: There is no trained model found. An initialized model will be used.')
 
+    def save_test_fig(self,iter, rec_silt_video, gt_silt_video):
+        random_batch_index = random.randint(0,rec_silt_video.shape[0]-1)
+        video_len = self.config['data_loader']['video_len']
+        vid_rec = torch.Tensor(video_len,1,64,64)
+        vid_gt = torch.Tensor(video_len,1,64,64)
+        for i in range(rec_silt_video[random_batch_index].shape[0]):
+            rec_img = rec_silt_video[random_batch_index][i,:,:,:]
+            gt_img = gt_silt_video[random_batch_index][i,:,:,:]
+            vid_rec[i,:,:,:] = rec_img
+            vid_gt[i,:,:,:] = gt_img
+        grid = make_grid(torch.cat((vid_rec,vid_gt)))
+        figs_save_path = os.path.join(self.config['save_dir']+'/figs','eval')
+        os.makedirs(figs_save_path,exist_ok=True)
+        save_image(grid, os.path.join(figs_save_path,f'{iter}.jpg'))
+
+    def save_fig(self,iter, rec_silt_video, gt_silt_video, occ_silt_video):
+        # save figs of train-infer imgs
+        random_batch_index = random.randint(0,rec_silt_video.shape[0]-1)
+        video_len = self.config['data_loader']['video_len']
+        vid_rec = torch.Tensor(video_len,1,64,64)
+        vid_gt = torch.Tensor(video_len,1,64,64)
+        vid_occ = torch.Tensor(video_len,1,64,64)
+        for i in range(rec_silt_video[random_batch_index].shape[0]):
+            rec_img = rec_silt_video[random_batch_index][i,:,:,:]
+            gt_img = gt_silt_video[random_batch_index][i,:,:,:]
+            occ_img = occ_silt_video[random_batch_index][i,:,:,:]
+            vid_rec[i,:,:,:] = rec_img
+            vid_gt[i,:,:,:] = gt_img
+            vid_occ[i,:,:,:] = occ_img
+        grid = make_grid(torch.cat((vid_rec,vid_gt,vid_occ)))
+        figs_save_path = os.path.join(self.config['save_dir']+'/figs',str(self.config["train_id"]))
+        os.makedirs(figs_save_path,exist_ok=True)
+        save_image(grid, os.path.join(figs_save_path,f'{iter}.jpg'))
+
     # save parameters every eval_epoch
-    def save(self, iter, rec_silt_video, gt_silt_video, occ_silt_video):
+    def save(self, iter):
         if self.config['global_rank'] == 0:
             gen_path = os.path.join(
                 self.config['save_dir'], 'gen_{}.pth'.format(str(iter).zfill(5)))
@@ -220,22 +268,7 @@ class Trainer():
                         'optimD': self.optimD.state_dict()}, opt_path)
             os.system('echo {} > {}'.format(str(iter).zfill(5),
                                             os.path.join(self.config['save_dir'], 'latest.ckpt')))
-            random_batch_index = random.randint(0,rec_silt_video.shape[0]-1)
-            video_len = self.config['data_loader']['video_len']
-            vid_rec = torch.Tensor(video_len,1,64,64)
-            vid_gt = torch.Tensor(video_len,1,64,64)
-            vid_occ = torch.Tensor(video_len,1,64,64)
-            for i in range(rec_silt_video[random_batch_index].shape[0]):
-                rec_img = rec_silt_video[random_batch_index][i,:,:,:]
-                gt_img = gt_silt_video[random_batch_index][i,:,:,:]
-                occ_img = occ_silt_video[random_batch_index][i,:,:,:]
-                vid_rec[i,:,:,:] = rec_img
-                vid_gt[i,:,:,:] = gt_img
-                vid_occ[i,:,:,:] = occ_img
-            grid = make_grid(torch.cat((vid_rec,vid_gt,vid_occ)))
-            figs_save_path = os.path.join(self.config['save_dir']+'/figs',str(self.config["train_id"]))
-            os.makedirs(figs_save_path,exist_ok=True)
-            save_image(grid, os.path.join(figs_save_path,f'{iter}.jpg'))
+
 
     # train entry
     def train(self):
@@ -252,6 +285,7 @@ class Trainer():
                 self.train_sampler.set_epoch(self.epoch)
 
             self._train_epoch(pbar)
+            self._valid_epoch()
             if self.iteration > self.train_args['iterations']:
                 break
         print('\nEnd training....')
@@ -259,7 +293,6 @@ class Trainer():
     # process input and calculate loss every training epoch
     def _train_epoch(self, pbar):
         device = self.config['device']
-
         for occ_silt_video, gt_silt_video, gt_pos_video, gt_neg_video in self.train_loader:
             self.adjust_learning_rate()
             self.iteration += 1
@@ -271,29 +304,26 @@ class Trainer():
             gt_silt_video = gt_silt_video.view(b*t, c, h, w)
 
             gen_loss = 0
-            dis_loss = 0
 
             # discriminator adversarial loss
             real_vid_feat = self.netD(gt_silt_video)
             fake_vid_feat = self.netD(pred_silt_video.detach())
-            # dis_real_loss = torch.mean(real_vid_feat)
-            # dis_fake_loss = torch.mean(fake_vid_feat)
-            # dis_loss = dis_fake_loss - dis_real_loss
-            dis_real_loss = self.adversarial_loss(real_vid_feat, True, True)
-            dis_fake_loss = self.adversarial_loss(fake_vid_feat, False, True)
-            dis_loss += (dis_real_loss + dis_fake_loss) / 2
+            dis_real_loss = torch.mean(real_vid_feat)
+            dis_fake_loss = torch.mean(fake_vid_feat)
+            dis_loss = (dis_fake_loss - dis_real_loss)/2
+            # dis_real_loss = self.adversarial_loss(real_vid_feat, True, True)
+            # dis_fake_loss = self.adversarial_loss(fake_vid_feat, False, True)
+            # dis_loss += dis_real_loss + dis_fake_loss / 2
             
+            grad_penalty = gradient_penalty(self.config['losses']["gp_weight"], self.netD, gt_silt_video, pred_silt_video)
+            gp_losses = grad_penalty
             
-            # grad_penalty = gradient_penalty(self.config['losses']["gp_weight"], self.netD, gt_silt_video, pred_silt_video)
-            # gp_losses = grad_penalty
-            
-            # dis_loss += gp_losses
-            
+            dis_loss += gp_losses
             
             self.add_summary(
-                self.dis_writer, 'loss/dis_vid_fake', dis_fake_loss.item())
+                self.dis_writer, 'loss/gp_losses', gp_losses.item())
             self.add_summary(
-                self.dis_writer, 'loss/dis_vid_real', dis_real_loss.item())
+                self.dis_writer, 'loss/dis_loss', dis_loss.item())
             self.optimD.zero_grad()
             dis_loss.backward()
             self.optimD.step()
@@ -325,11 +355,10 @@ class Trainer():
             lossDA.backward()
             self.optimA.step()
             
-            
             # generator adversarial loss
             gen_vid_feat = self.netD(pred_silt_video)
-            gan_loss = self.adversarial_loss(gen_vid_feat, True, False)
-            # gan_loss = torch.mean(gen_vid_feat)
+            # gan_loss = self.adversarial_loss(gen_vid_feat, True, False)
+            gan_loss = -torch.mean(gen_vid_feat)
             gan_loss = gan_loss * self.config['losses']['adversarial_weight']
             gen_loss += gan_loss
             self.add_summary(
@@ -337,32 +366,41 @@ class Trainer():
 
             # generator img loss
             if self.config['losses']["imgloss_type"] == 'L2':
-                valid_loss = self.l1_loss(pred_silt_video, gt_silt_video)
-            else:
                 valid_loss = self.l2_loss(pred_silt_video, gt_silt_video)
-            # valid_loss = self.l1_loss(pred_silt_video, gt_silt_video)
+            else:
+                valid_loss = self.l1_loss(pred_silt_video, gt_silt_video)
             valid_loss = valid_loss * self.config['losses']['valid_weight']
-            gen_loss += valid_loss 
+            gen_loss += valid_loss
             self.add_summary(
                 self.gen_writer, 'loss/valid_loss', valid_loss.item())
             
             self.optimG.zero_grad()
             gen_loss.backward()
             self.optimG.step()
-
             # console logs
             if self.config['global_rank'] == 0:
                 pbar.update(1)
                 pbar.set_description((
-                    f"d: {dis_loss.item():.3f}; g: {gan_loss.item():.3f};"
-                    f"valid: {valid_loss.item():.3f}")
+                    f"d: {dis_loss.item():.3f}; assd: {lossDA.item():.3f};"
+                    f"gen: {gen_loss.item():.3f}")
                 )
-
+            # saving test figures
+            if self.iteration % self.train_args['save_fig_freq'] == 0:
+                self.save_fig(self.iteration,pred_silt_video.view(b,t, c, h, w),\
+                    gt_silt_video.view(b,t, c, h, w),occ_silt_video)
             # saving models
             if self.iteration % self.train_args['save_freq'] == 0:
-                self.save(int(self.iteration//self.train_args['save_freq']),pred_silt_video.view(b,t, c, h, w),\
-                    gt_silt_video.view(b,t, c, h, w),occ_silt_video)
-                # self.gait_eval.eval(self.netG,self.gait_model)
+                self.save(int(self.iteration//self.train_args['save_freq']))
+                self.gait_eval.eval(self.netG,self.gait_model)
             if self.iteration > self.train_args['iterations']:
                 break
+        
+    def _valid_epoch(self):
+        device = self.config['device']
+        for iter ,(occ_silt_video , gt_silt_video , rec_silt_paths) in  enumerate(self.test_loader):
+            occ_silt_video, gt_silt_video = occ_silt_video.to(device).float(),gt_silt_video.to(device).float()
+            b, t, c, h, w = occ_silt_video.size()
+            rec_silt_video = self.netG(occ_silt_video)
+            if iter%200 == 0:
+                self.save_test_fig(iter,rec_silt_video.view(b,t, c, h, w),gt_silt_video)
 

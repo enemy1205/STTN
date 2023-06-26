@@ -10,7 +10,7 @@ import numpy as np
 import torchvision.transforms.functional as tf
 import torch.utils.data as tordata
 
-class TestDataset(tordata.Dataset):
+class EvalDataset(tordata.Dataset):
     def __init__(self, seq_dir, label, seq_type, view, cache, resolution):
         self.seq_dir = seq_dir
         self.view = view
@@ -54,6 +54,7 @@ class TestDataset(tordata.Dataset):
         return self.img2xarray(
             path)[:, :, self.cut_padding:-self.cut_padding].astype(
             'float32') / 255.0
+        # return self.img2xarray(path).astype('float32') / 255.0
 
     def __getitem__(self, index):
         # pose sequence sampling
@@ -109,9 +110,11 @@ def gaitset_collate_fn(batch):
     def select_frame(index):
         sample = seqs[index]
         frame_set = frame_sets[index]
+        # 从一段序列中随机抽取指定数目帧数
         if sample_type == 'random':
             frame_id_list = random.choices(frame_set, k=frame_num)
             _ = [feature.loc[frame_id_list].values for feature in sample]
+        # 直接全部返回
         else:
             _ = [feature.values for feature in sample]
         return _
@@ -400,3 +403,77 @@ class MultiGaitDataset(torch.utils.data.Dataset):
 
     #     return occ_cut_silt_video, gt_silt_video
 
+
+class TestDataset(torch.utils.data.Dataset):
+    def __init__(self,valid_csv_path,video_len,test_id_number):
+        self.csv_path = valid_csv_path
+        self.video_len = video_len  # 32
+        self.id_list = [i for i in range(test_id_number, test_id_number+62)]
+        self.occ_cut_silt_path = []
+        self.occ_cut_silt_len = []
+        self.gt_silt_path = []
+        self.df = pd.read_csv(self.csv_path)
+        for i in range(len(self.df)):
+            self.occ_cut_silt_path.append(self.df['occ_sil_path'][i])
+            self.occ_cut_silt_len.append(self.df['occ_sil_video_len'][i])
+            self.gt_silt_path.append(self.df['gt_sli_path'][i])
+
+    def __len__(self):
+        return len(self.occ_cut_silt_path)
+    
+    def loadimg(self, path):
+        inImage = cv2.imread(path, 0)  # 以单通道读进来
+        info = np.iinfo(inImage.dtype)
+        inImage = inImage.astype(np.float64) / info.max  # 归一化到0-1
+
+        iw = inImage.shape[1]
+        ih = inImage.shape[0]
+        if iw < ih:
+            inImage = cv2.resize(inImage, (64, int(64 * ih/iw)))
+        else:
+            inImage = cv2.resize(inImage, (int(64 * iw / ih), 64))
+        inImage = inImage[0:64, 0:64]
+        return torch.from_numpy(inImage).unsqueeze(0)
+        # 归一化至-1~1
+        # return torch.from_numpy(2 * inImage - 1).unsqueeze(0)
+
+
+    def loadvideo(self, occ_cut_path, gt_path,len_):
+        video_occ = []
+        video_gt = []
+        for imgs in sorted(os.listdir(occ_cut_path)):
+            video_occ.append(self.loadimg(os.path.join(occ_cut_path, imgs)))
+        for imgs in sorted(os.listdir(gt_path)):
+            video_gt.append(self.loadimg(os.path.join(gt_path, imgs)))
+        # 文件夹中剪影图数< 设定视频长度 则用最后一帧去填充空缺,cut和gt应该是一一对应关系，不必二次比较数量
+        if len(video_occ)==0:
+            print(f'there is no img in {occ_cut_path} , record len :{len_}')
+        if len(video_occ) < self.video_len:
+            len_broken = len(video_occ)
+            # print(len_broken)
+            for i in range(self.video_len - len_broken):
+                video_occ.append(video_occ[-1])
+        if len(video_gt) < self.video_len:
+            len_gt = len(video_gt)
+            for i in range(self.video_len - len_gt):
+                video_gt.append(video_gt[-1])
+        
+        # 摘取video_len的序列
+        split = random.randint(0, len(video_occ)-self.video_len)
+        video_occ = video_occ[split:split+self.video_len]
+        video_gt = video_gt[split:split+self.video_len]
+        return torch.stack(video_occ), torch.stack(video_gt)  # 将列表元素拼接起来
+
+    def __getitem__(self, index):
+        # 某段视频不存在帧
+        # if self.occ_cut_silt_len[index] == 0:
+        #     return None
+        if self.occ_cut_silt_len[index] < 16:  # 步态轮廓图帧数小于16的不作为训练数据
+            return None
+
+        occ_silt_video, gt_silt_video = self.loadvideo(self.occ_cut_silt_path[index], self.gt_silt_path[index],self.occ_cut_silt_len[index])
+        
+        rec_slit_info = self.occ_cut_silt_path[index].split('/')[-3:]
+        rec_silt_path = rec_slit_info[0] + "/" + rec_slit_info[1] + "/" +rec_slit_info[2]
+        
+        return occ_silt_video, gt_silt_video, rec_silt_path

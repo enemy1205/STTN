@@ -11,17 +11,15 @@ def generate_gei(img_sq):
     # torchvision.utils.save_image(GEI, 'tmp.jpg')
     return GEI
 
+
 '''
 gradient penalty
 '''
 def gradient_penalty(gp_weight, discriminator, real_data, generated_data):
-    batch_size = real_data.size()[0]
-
     # Calculate interpolation
-    alpha = torch.rand(batch_size, 1, 1, 1, 1)
-    alpha = alpha.expand_as(real_data)
+    alpha = torch.rand((real_data.size(0), 1, 1, 1))
     alpha = alpha.cuda()
-    interpolated = alpha * real_data.detach().data + (1 - alpha) * generated_data.data
+    interpolated = (alpha * real_data + ((1 - alpha) * generated_data)).requires_grad_(True)
     interpolated = Variable(interpolated, requires_grad=True)
     interpolated = interpolated.cuda()
 
@@ -36,15 +34,16 @@ def gradient_penalty(gp_weight, discriminator, real_data, generated_data):
 
     # Gradients have shape (batch_size, num_channels, img_width, img_height),
     # so flatten to easily take norm per example in batch
-    gradients = gradients.view(batch_size, -1)
-    # cfg.losses['gradient_norm'].append(gradients.norm(2, dim=1).mean().data[0])
+    gradients = gradients.view(gradients.size(0), -1)
+    gradient_penalty = ((gradients.norm(2, dim=1) -1)**2).mean()
+    # # cfg.losses['gradient_norm'].append(gradients.norm(2, dim=1).mean().data[0])
 
-    # Derivatives of the gradient close to 0 can cause problems because of
-    # the square root, so manually calculate norm and add epsilon
-    gradients_norm = torch.sqrt(torch.sum(gradients ** 2, dim=1) + 1e-12)
+    # # Derivatives of the gradient close to 0 can cause problems because of
+    # # the square root, so manually calculate norm and add epsilon
+    # gradients_norm = torch.sqrt(torch.sum(gradients ** 2, dim=1) + 1e-12)
 
     # Return gradient penalty
-    return gp_weight * ((gradients_norm - 1) ** 2).mean()
+    return gp_weight * gradient_penalty
 
 class AdversarialLoss(nn.Module):
     r"""
