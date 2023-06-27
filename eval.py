@@ -160,8 +160,9 @@ class GaitEval:
         feature_list = np.concatenate(feature_list, 0)
         acc_CASIA_B = evaluation(feature_list,view_list,seq_type_list,label_list, self.dataset)
         acc_NM_mean, acc_BG_mean, acc_CL_mean = np.mean(acc_CASIA_B[0, :, :, 0]), np.mean(acc_CASIA_B[1, :, :, 0]), np.mean(acc_CASIA_B[2, :, :, 0])
+        print('\n')
         print(f"acc_NM_mean:{acc_NM_mean} , acc_BG_mean:{acc_BG_mean} , acc_CL_mean:{acc_CL_mean}")
-        
+        print('\n')
     # def eval(self,rec_model,gait_model):
     #     # 推理
     #     import random
@@ -225,6 +226,8 @@ if __name__ == "__main__":
     gait_eval = GaitEval(eval_cfg)
     gait_model = gait_model.to(config['device'])
     rec_model = InpaintGenerator()
+    checkpoint_G = torch.load("/home/lxc/projects/VideoInpainting/STTN/release_model/sttn_gait/gen_00010.pth")['netG']
+    rec_model.load_state_dict(checkpoint_G)
     rec_model = rec_model.to(config['device'])
     gait_eval.eval(rec_model,gait_model)
     # rec_model = SimVP(shape_in=(32,1,64,64)).cuda()

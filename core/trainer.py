@@ -308,8 +308,8 @@ class Trainer():
             # discriminator adversarial loss
             real_vid_feat = self.netD(gt_silt_video)
             fake_vid_feat = self.netD(pred_silt_video.detach())
-            dis_real_loss = torch.mean(real_vid_feat)
-            dis_fake_loss = torch.mean(fake_vid_feat)
+            dis_real_loss = torch.mean(real_vid_feat+1)
+            dis_fake_loss = torch.mean(fake_vid_feat+1)
             dis_loss = (dis_fake_loss - dis_real_loss)/2
             # dis_real_loss = self.adversarial_loss(real_vid_feat, True, True)
             # dis_fake_loss = self.adversarial_loss(fake_vid_feat, False, True)
@@ -401,6 +401,6 @@ class Trainer():
             occ_silt_video, gt_silt_video = occ_silt_video.to(device).float(),gt_silt_video.to(device).float()
             b, t, c, h, w = occ_silt_video.size()
             rec_silt_video = self.netG(occ_silt_video)
-            if iter%200 == 0:
+            if iter%40 == 0:
                 self.save_test_fig(iter,rec_silt_video.view(b,t, c, h, w),gt_silt_video)
 

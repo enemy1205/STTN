@@ -12,3 +12,4 @@ examples/*_result.mp4
 *.png
 *.zip
 .vscode
+nohup.out
