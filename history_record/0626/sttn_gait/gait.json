@@ -1,6 +1,6 @@
 {
     "seed": 2020,
-    "train_id": 628,
+    "train_id": 626,
     "save_dir": "release_model/",
     "gait_model_path": "/home/lxc/projects/OpenGait/output/CASIA-B/GaitSet/GaitSet/checkpoints/GaitSet-30000.pt",
     "data_loader": {

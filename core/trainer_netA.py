@@ -20,10 +20,10 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from tensorboardX import SummaryWriter
 from torchvision.utils import make_grid, save_image
-import torch.distributed as dist
+from model.gaitset import TemporalAssd
 from eval import GaitEval
 from core.dataset import MultiGaitDataset,TestDataset
-from core.loss import AdversarialLoss,gradient_penalty,generate_gei
+from core.loss import gradient_penalty
 
 
 def gaitset_model_init(gaitset_checkpoint_path):
@@ -77,13 +77,13 @@ class Trainer():
             num_workers=self.train_args['num_workers'],
             sampler=self.train_sampler,
             collate_fn=collate_fn)
-        self.test_dataset = TestDataset(data_cfg['valid_csv_path'],data_cfg['video_len'],data_cfg['valid_id_number'])
-        self.test_loader = DataLoader(
-            self.test_dataset,
-            batch_size=self.eval_args['batch_size'] // config['world_size'],
-            shuffle=False, 
-            num_workers=self.eval_args['num_workers'],
-            collate_fn=collate_fn_test)
+        # self.test_dataset = TestDataset(data_cfg['valid_csv_path'],data_cfg['video_len'],data_cfg['valid_id_number'])
+        # self.test_loader = DataLoader(
+        #     self.test_dataset,
+        #     batch_size=self.eval_args['batch_size'] // config['world_size'],
+        #     shuffle=False, 
+        #     num_workers=self.eval_args['num_workers'],
+        #     collate_fn=collate_fn_test)
         
         # set eval model and dataset
         eval_cfg = config['eval']
@@ -96,7 +96,7 @@ class Trainer():
         # self.adversarial_loss = self.adversarial_loss.to(self.config['device'])
         self.l1_loss = nn.L1Loss().cuda()
         self.l2_loss = nn.MSELoss().cuda()
-        
+        self.similarity_loss = torch.cosine_similarity
         # setup models including generator and discriminator
         net = importlib.import_module('model.'+config['model'])
         self.netG = net.InpaintGenerator()
@@ -104,7 +104,7 @@ class Trainer():
         self.netD = net.Discriminator(
             in_channels=1, use_sigmoid=config['losses']['GAN_LOSS'] != 'hinge')
         self.netD = self.netD.to(self.config['device'])
-        self.netA = net.NetA(nc=1)
+        self.netA = TemporalAssd()
         self.netA = self.netA.to(self.config['device'])
         self.optimG = torch.optim.Adam(
             self.netG.parameters(), 
@@ -192,17 +192,19 @@ class Trainer():
                 model_path, 'gen_{}.pth'.format(str(latest_epoch).zfill(5)))
             dis_path = os.path.join(
                 model_path, 'dis_{}.pth'.format(str(latest_epoch).zfill(5)))
-            opt_path = os.path.join(
-                model_path, 'opt_{}.pth'.format(str(latest_epoch).zfill(5)))
+            assd_path = os.path.join(
+                model_path, 'assd_{}.pth'.format(str(latest_epoch).zfill(5)))
             if self.config['global_rank'] == 0:
                 print('Loading model from {}...'.format(gen_path))
             data = torch.load(gen_path, map_location=self.config['device'])
             self.netG.load_state_dict(data['netG'])
             data = torch.load(dis_path, map_location=self.config['device'])
             self.netD.load_state_dict(data['netD'])
-            data = torch.load(opt_path, map_location=self.config['device'])
+            data = torch.load(assd_path, map_location=self.config['device'])
+            self.netA.load_state_dict(data['netA'])
             self.optimG.load_state_dict(data['optimG'])
             self.optimD.load_state_dict(data['optimD'])
+            self.optimA.load_state_dict(data['optimA'])
             self.epoch = data['epoch']
             self.iteration = data['iteration']
         else:
@@ -284,7 +286,7 @@ class Trainer():
                 self.train_sampler.set_epoch(self.epoch)
 
             self._train_epoch(pbar)
-            # self._valid_epoch()
+            self._valid_epoch()
             if self.iteration > self.train_args['iterations']:
                 break
         print('\nEnd training....')
@@ -331,21 +333,19 @@ class Trainer():
             # infer(gt_pos_video , pred_silt_video , gt_neg_video)
             # 计算余弦相似度，1 ，0 ， 0
             # 计算损失
-            rec_gei = generate_gei(pred_silt_video.view(b,t, c, h, w).detach())
-            gt_video_pos_gei = generate_gei(gt_pos_video).detach()
-            gt_video_neg_gei = generate_gei(gt_neg_video).detach()
-            gt_video_gei = generate_gei(gt_silt_video.view(b,t, c, h, w)).detach()
             
-            associated = torch.cat((gt_video_gei, gt_video_pos_gei), 1)
-            no_associated = torch.cat((gt_video_gei, gt_video_neg_gei), 1)
-            faked = torch.cat((gt_video_gei, rec_gei), 1)
+            rec_fea = self.netA(pred_silt_video)
+            gt_video_pos_fea = self.netA(gt_pos_video.view(b*t,c,h,w))
+            gt_video_neg_fea = self.netA(gt_neg_video.view(b*t,c,h,w))
+            gt_video_fea = self.netA(gt_silt_video)
             
-            out_assd = self.netA(associated)
-            out_noassd = self.netA(no_associated)
-            fake_digit = self.netA(faked)
+            
+            out_assd = self.similarity_loss(rec_fea,gt_video_pos_fea)
+            out_noassd = self.similarity_loss(rec_fea,gt_video_neg_fea)
+            fake_digit = self.similarity_loss(rec_fea,gt_video_fea)
             lossA_assd = F.binary_cross_entropy(out_assd, torch.ones_like(out_assd))
             lossA_noassd = F.binary_cross_entropy(out_noassd, torch.zeros_like(out_noassd))
-            lossA_faked = F.binary_cross_entropy(fake_digit, torch.zeros_like(fake_digit))
+            lossA_faked = F.binary_cross_entropy(fake_digit, torch.zeros_like(fake_digit))*0.1
             
             lossDA = lossA_assd + lossA_noassd + lossA_faked
             
@@ -397,12 +397,12 @@ class Trainer():
             if self.iteration > self.train_args['iterations']:
                 break
         
-    def _valid_epoch(self):
-        device = self.config['device']
-        for iter ,(occ_silt_video , gt_silt_video , rec_silt_paths) in  enumerate(self.test_loader):
-            occ_silt_video, gt_silt_video = occ_silt_video.to(device).float(),gt_silt_video.to(device).float()
-            b, t, c, h, w = occ_silt_video.size()
-            rec_silt_video = self.netG(occ_silt_video)
-            if iter%40 == 0:
-                self.save_test_fig(iter,rec_silt_video.view(b,t, c, h, w),gt_silt_video)
+    # def _valid_epoch(self):
+    #     device = self.config['device']
+    #     for iter ,(occ_silt_video , gt_silt_video , rec_silt_paths) in  enumerate(self.test_loader):
+    #         occ_silt_video, gt_silt_video = occ_silt_video.to(device).float(),gt_silt_video.to(device).float()
+    #         b, t, c, h, w = occ_silt_video.size()
+    #         rec_silt_video = self.netG(occ_silt_video)
+    #         if iter%40 == 0:
+    #             self.save_test_fig(iter,rec_silt_video.view(b,t, c, h, w),gt_silt_video)
 

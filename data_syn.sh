@@ -1,0 +1,1 @@
+python /home/lxc/projects/OpenGait/occ_dataset/seq_synchronization.py

@@ -249,3 +249,64 @@ class GaitSet(nn.Module):
         embs=self.Head(feature)
 
         return embs
+    
+    
+class TemporalAssd(nn.Module):
+    def __init__(self):
+        super(TemporalAssd, self).__init__() 
+        in_c=[1, 32, 64, 128]
+        self.set_block1=nn.Sequential(BasicConv2d(in_c[0], in_c[1], 5, 1, 2),
+                                      nn.LeakyReLU(inplace=True),
+                                      BasicConv2d(in_c[1], in_c[1], 3, 1, 1),
+                                      nn.LeakyReLU(inplace=True),
+                                      nn.MaxPool2d(kernel_size=2, stride=2))
+
+        self.set_block2=nn.Sequential(BasicConv2d(in_c[1], in_c[2], 3, 1, 1),
+                                      nn.LeakyReLU(inplace=True),
+                                      BasicConv2d(in_c[2], in_c[2], 3, 1, 1),
+                                      nn.LeakyReLU(inplace=True),
+                                      nn.MaxPool2d(kernel_size=2, stride=2))
+
+        self.set_block3=nn.Sequential(BasicConv2d(in_c[2], in_c[3], 3, 1, 1),
+                                      nn.LeakyReLU(inplace=True),
+                                      BasicConv2d(in_c[3], in_c[3], 3, 1, 1),
+                                      nn.LeakyReLU(inplace=True))
+
+        self.gl_block2=copy.deepcopy(self.set_block2)
+        self.gl_block3=copy.deepcopy(self.set_block3)
+
+        self.set_block1=SetBlockWrapper(self.set_block1)
+        self.set_block2=SetBlockWrapper(self.set_block2)
+        self.set_block3=SetBlockWrapper(self.set_block3)
+
+        self.set_pooling=PackSequenceWrapper(torch.max)
+
+        self.Head=SeparateFCs(parts_num=62, in_channels=128, out_channels=256)
+
+        self.HPP=HorizontalPoolingPyramid()
+
+    def forward(self, inputs):
+        seqL=None
+        inputs = inputs.unsqueeze(1)
+        x=inputs.permute(2,1,0,3,4)
+        del inputs
+
+        outs=self.set_block1(x)
+        gl=self.set_pooling(outs, seqL, options={"dim": 2})[0]
+        gl=self.gl_block2(gl)
+
+        outs=self.set_block2(outs)
+        gl=gl+self.set_pooling(outs, seqL, options={"dim": 2})[0]
+        gl=self.gl_block3(gl)
+
+        outs=self.set_block3(outs)
+        outs=self.set_pooling(outs, seqL, options={"dim": 2})[0]
+        gl=gl+outs
+
+        # Horizontal Pooling Matching, HPM
+        feature1=self.HPP(outs)  # [n, c, p]
+        feature2=self.HPP(gl)  # [n, c, p]
+        feature=torch.cat([feature1, feature2], -1)  # [n, c, p]
+        embs=self.Head(feature)
+
+        return embs

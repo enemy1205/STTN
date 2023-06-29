@@ -67,8 +67,8 @@ class BaseNetwork(nn.Module):
 class InpaintGenerator(BaseNetwork):
     def __init__(self, init_weights=True):
         super(InpaintGenerator, self).__init__()
-        channel = 256
-        stack_num = 4
+        channel = 128
+        stack_num = 2
         patchsize = [(4,4),(2,2)]
         blocks = []
         for _ in range(stack_num):
@@ -367,6 +367,8 @@ class NetA(nn.Module):
         x = self.discriminator(x)
         return x.view(-1, 1)
     
+    
+
     
 if __name__ == "__main__":
     import os
