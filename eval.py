@@ -5,7 +5,7 @@ import os.path as osp
 import os
 import numpy as np
 import torch.nn.functional as F
-from core.utils import ts2var,np2var,cuda_dist
+from core.utils import ts2var,np2var,cuda_dist,eval_log_print
 
 def load_data(dataset_path, resolution, dataset, cache=False):
     seq_dir = list()
@@ -124,9 +124,8 @@ class GaitEval:
             label_list += label
         feature_list = np.concatenate(feature_list, 0)
         acc_CASIA_B = evaluation(feature_list,view_list,seq_type_list,label_list, self.dataset)
-        acc_NM_mean, acc_BG_mean, acc_CL_mean = np.mean(acc_CASIA_B[0, :, :, 0]), np.mean(acc_CASIA_B[1, :, :, 0]), np.mean(acc_CASIA_B[2, :, :, 0])
-        print(f"acc_NM_mean:{acc_NM_mean} , acc_BG_mean:{acc_BG_mean} , acc_CL_mean:{acc_CL_mean}")
-        
+        print('\n')
+        eval_log_print(acc_CASIA_B,1)
         
     
     def eval(self,rec_model,gait_model):
@@ -147,7 +146,7 @@ class GaitEval:
             start = [0] + np.cumsum(seqL).tolist()[:-1]
             for curr_start, curr_seqL in zip(start, seqL):
                 narrowed_seq = seqs.narrow(1, curr_start, curr_seqL)
-                rec_seq = rec_model(narrowed_seq.unsqueeze(2))
+                rec_seq = rec_model(narrowed_seq.unsqueeze(2)).squeeze(0)
                 rec_seq = rec_seq[:,:,:,10:-10]
                 # rec_seq : t , c , h , w
                 feature = gait_model.infer(rec_seq)
@@ -159,10 +158,8 @@ class GaitEval:
             label_list += label
         feature_list = np.concatenate(feature_list, 0)
         acc_CASIA_B = evaluation(feature_list,view_list,seq_type_list,label_list, self.dataset)
-        acc_NM_mean, acc_BG_mean, acc_CL_mean = np.mean(acc_CASIA_B[0, :, :, 0]), np.mean(acc_CASIA_B[1, :, :, 0]), np.mean(acc_CASIA_B[2, :, :, 0])
         print('\n')
-        print(f"acc_NM_mean:{acc_NM_mean} , acc_BG_mean:{acc_BG_mean} , acc_CL_mean:{acc_CL_mean}")
-        print('\n')
+        eval_log_print(acc_CASIA_B,1)
     # def eval(self,rec_model,gait_model):
     #     # 推理
     #     import random
@@ -211,7 +208,8 @@ if __name__ == "__main__":
     import sys
     from model.gaitset import GaitSet
     from model.sttn import InpaintGenerator
-    os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+    from model.convlstm import convlstm_model_64_expand
+    os.environ["CUDA_VISIBLE_DEVICES"] = "2"
    
     
     # loading configs
@@ -225,11 +223,12 @@ if __name__ == "__main__":
     gait_model.load_state_dict(ckpt)
     gait_eval = GaitEval(eval_cfg)
     gait_model = gait_model.to(config['device'])
-    rec_model = InpaintGenerator()
-    checkpoint_G = torch.load("/home/lxc/projects/VideoInpainting/STTN/release_model/sttn_gait/gen_00010.pth")['netG']
+    rec_model = convlstm_model_64_expand()
+    checkpoint_G = torch.load("/home/lxc/projects/VideoInpainting/STTN/release_model/sttn_convlstm/gen_00001.pth")['netG']
     rec_model.load_state_dict(checkpoint_G)
     rec_model = rec_model.to(config['device'])
     gait_eval.eval(rec_model,gait_model)
+    # gait_eval.gt_eval(gait_model)
     # rec_model = SimVP(shape_in=(32,1,64,64)).cuda()
     # checkpoint_G = torch.load("/home/lxc/projects/GaitGan/checkpoints/train_simvp/2023-06-14-21-44-08_180_19367.pth")['modelG']
     # new_checkpoint_G = {}

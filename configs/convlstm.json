@@ -17,7 +17,7 @@
     },
     "losses": {
         "valid_weight": 0.15,
-        "gp_weight": 0.01,
+        "gp_weight": 10,
         "adversarial_weight": 0.02,
         "imgloss_type": "L1",
         "GAN_LOSS": "hinge"
@@ -25,7 +25,7 @@
     "eval": {
         "batch_size": 16,
         "num_workers": 16,
-        "gt_root_path": "/home/lxc/dataset/CASIA_B/val/silhouettes_cut",
+        "gt_root_path": "/home/lxc/dataset/CASIA_B/train/silhouettes_occ_cut",
         "occ_root_path": "/home/lxc/dataset/CASIA_B/val/silhouettes_occ_cut",
         "dataset": "CASIA-B",
         "resolution": 64

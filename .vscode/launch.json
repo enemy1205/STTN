@@ -9,7 +9,7 @@
             "type": "python",
             "request": "launch",
             "program": "${file}",
-            "args": ["-c=configs/gait.json"],
+            "args": ["-c=configs/convlstm.json"],
             "console": "integratedTerminal",
             "justMyCode": true
         }

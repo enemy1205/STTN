@@ -23,7 +23,7 @@ from tensorboardX import SummaryWriter
 from torchvision.utils import make_grid, save_image
 from eval import GaitEval
 from core.dataset import MultiGaitDataset,TestDataset
-from core.loss import AdversarialLoss,gradient_penalty,generate_gei
+from core.loss import AdversarialLoss,gradient_penalty_ori,generate_gei_2
 
 
 def gaitset_model_init(gaitset_checkpoint_path):
@@ -99,11 +99,11 @@ class Trainer():
         self.l2_loss = nn.MSELoss().cuda()
         
         # setup models including generator and discriminator
-        net = importlib.import_module('model.'+config['model'])
-        self.netG = net.InpaintGenerator()
+        net = importlib.import_module('model.convlstm')
+        Generator=net.convlstm_model_64_expand
+        self.netG = Generator()
         self.netG = self.netG.to(self.config['device'])
-        self.netD = net.Discriminator(
-            in_channels=1, use_sigmoid=True)
+        self.netD = net.Discriminator()
         self.netD = self.netD.to(self.config['device'])
         self.netA = net.NetA(nc=1)
         self.netA = self.netA.to(self.config['device'])
@@ -265,7 +265,7 @@ class Trainer():
                 netA = self.netA
             torch.save({'netG': netG.state_dict()}, gen_path)
             torch.save({'netD': netD.state_dict()}, dis_path)
-            # torch.save({'netA': netA.state_dict()}, assd_path)
+            torch.save({'netA': netA.state_dict()}, assd_path)
             os.system('echo {} > {}'.format(str(iter).zfill(5),
                                             os.path.join(self.config['save_dir'], 'latest.ckpt')))
 
@@ -285,7 +285,7 @@ class Trainer():
                 self.train_sampler.set_epoch(self.epoch)
 
             self._train_epoch(pbar)
-            self._valid_epoch()
+            # self._valid_epoch()
             if self.iteration > self.train_args['iterations']:
                 break
         print('\nEnd training....')
@@ -300,22 +300,23 @@ class Trainer():
             occ_silt_video, gt_silt_video = occ_silt_video.to(device).float(),gt_silt_video.to(device).float()
             gt_pos_video , gt_neg_video = gt_pos_video.to(device).float(),gt_neg_video.to(device).float()
             b, t, c, h, w = occ_silt_video.size()
-            pred_silt_video = self.netG(occ_silt_video).view(b*t, c, h, w)
-            gt_silt_video = gt_silt_video.view(b*t, c, h, w)
-
+            pred_silt_video = self.netG(occ_silt_video).permute(0,2,1,3,4)
+            gt_silt_video = gt_silt_video.permute(0,2,1,3,4)
+            gt_pos_video = gt_pos_video.permute(0,2,1,3,4)
+            gt_neg_video = gt_neg_video.permute(0,2,1,3,4)
             gen_loss = 0
-            # Adversarial ground truths
-            # valid_label = Variable(torch.cuda.FloatTensor(gt_silt_video.size(), 1).fill_(1.0), requires_grad=False)
-            # fake_label= Variable(torch.cuda.FloatTensor(gt_silt_video.size(), 1).fill_(0.0), requires_grad=False)
             # discriminator adversarial loss
             real_vid_feat = self.netD(gt_silt_video)
             fake_vid_feat = self.netD(pred_silt_video.detach())
-            dis_real_loss = torch.mean(real_vid_feat+1)
-            dis_fake_loss = torch.mean(fake_vid_feat+1)
-            dis_loss = (dis_fake_loss - dis_real_loss)/2
+            # dis_real_loss = torch.mean(real_vid_feat+1)
+            # dis_fake_loss = torch.mean(fake_vid_feat+1)
+            # dis_loss = (dis_fake_loss - dis_real_loss)/2
+            dis_real_loss = torch.mean(real_vid_feat)
+            dis_fake_loss = torch.mean(fake_vid_feat)
+            dis_loss = dis_fake_loss - dis_real_loss
 
             
-            grad_penalty = gradient_penalty(self.config['losses']["gp_weight"], self.netD, gt_silt_video, pred_silt_video)
+            grad_penalty = gradient_penalty_ori(self.config['losses']["gp_weight"], self.netD, gt_silt_video, pred_silt_video)
             gp_losses = grad_penalty
             
             dis_loss += gp_losses
@@ -328,32 +329,31 @@ class Trainer():
             dis_loss.backward()
             self.optimD.step()
 
-            # rec_gei = generate_gei(pred_silt_video.view(b,t, c, h, w).detach())
-            # gt_video_pos_gei = generate_gei(gt_pos_video).detach()
-            # gt_video_neg_gei = generate_gei(gt_neg_video).detach()
-            # gt_video_gei = generate_gei(gt_silt_video.view(b,t, c, h, w)).detach()
+            rec_gei = generate_gei_2(pred_silt_video.detach())
+            gt_video_pos_gei = generate_gei_2(gt_pos_video).detach()
+            gt_video_neg_gei = generate_gei_2(gt_neg_video).detach()
+            gt_video_gei = generate_gei_2(gt_silt_video).detach()
             
-            # associated = torch.cat((gt_video_gei, gt_video_pos_gei), 1)
-            # no_associated = torch.cat((gt_video_gei, gt_video_neg_gei), 1)
-            # faked = torch.cat((gt_video_gei, rec_gei), 1)
+            associated = torch.cat((gt_video_gei, gt_video_pos_gei), 1)
+            no_associated = torch.cat((gt_video_gei, gt_video_neg_gei), 1)
+            faked = torch.cat((gt_video_gei, rec_gei), 1)
             
-            # out_assd = self.netA(associated)
-            # out_noassd = self.netA(no_associated)
-            # fake_digit = self.netA(faked)
-            # lossA_assd = F.binary_cross_entropy(out_assd, torch.ones_like(out_assd))
-            # lossA_noassd = F.binary_cross_entropy(out_noassd, torch.zeros_like(out_noassd))
-            # lossA_faked = F.binary_cross_entropy(fake_digit, torch.zeros_like(fake_digit))
+            out_assd = self.netA(associated)
+            out_noassd = self.netA(no_associated)
+            fake_digit = self.netA(faked)
+            lossA_assd = F.binary_cross_entropy(out_assd, torch.ones_like(out_assd))
+            lossA_noassd = F.binary_cross_entropy(out_noassd, torch.zeros_like(out_noassd))
+            lossA_faked = F.binary_cross_entropy(fake_digit, torch.zeros_like(fake_digit))
             
-            # lossDA = lossA_assd + lossA_noassd + lossA_faked
-            lossDA = 0.
+            lossDA = lossA_assd + lossA_noassd + lossA_faked
             
-            # self.add_summary(self.assd_writer,'loss/lossA_assd',lossA_assd.item())
-            # self.add_summary(self.assd_writer,'loss/lossA_noassd',lossA_noassd.item())
-            # self.add_summary(self.assd_writer,'loss/lossA_faked',lossA_faked.item())
+            self.add_summary(self.assd_writer,'loss/lossA_assd',lossA_assd.item())
+            self.add_summary(self.assd_writer,'loss/lossA_noassd',lossA_noassd.item())
+            self.add_summary(self.assd_writer,'loss/lossA_faked',lossA_faked.item())
             
-            # self.optimA.zero_grad()
-            # lossDA.backward()
-            # self.optimA.step()
+            self.optimA.zero_grad()
+            lossDA.backward()
+            self.optimA.step()
             
             # generator adversarial loss
             gen_vid_feat = self.netD(pred_silt_video)
@@ -370,7 +370,9 @@ class Trainer():
             else:
                 valid_loss = self.l1_loss(pred_silt_video, gt_silt_video)
             valid_loss = valid_loss * self.config['losses']['valid_weight']
-            gen_loss += valid_loss
+            # lossGA = F.binary_cross_entropy(fake_digit, torch.ones_like(fake_digit))
+            # gen_loss =gen_loss+ valid_loss + 0.1*lossGA
+            gen_loss =gen_loss+ valid_loss
             self.add_summary(
                 self.gen_writer, 'loss/valid_loss', valid_loss.item())
             

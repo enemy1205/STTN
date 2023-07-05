@@ -1,0 +1,1 @@
+python /home/lxc/projects/VideoInpainting/STTN/train_2.py -c=/home/lxc/projects/VideoInpainting/STTN/configs/convlstm.json 

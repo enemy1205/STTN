@@ -1,6 +1,11 @@
 import os
 import sys
+
+
 def synchronize_seq(seg_dataset_path,ori_dataset_path):
+    '''
+    自行分割CASIA-B数据集后,存在许多多余的无内容帧,使用此函数与官方提供的剪影图序列进行时序对齐
+    '''
     ids = os.listdir(ori_dataset_path)
     id_paths = [os.path.join(ori_dataset_path,id) for id in ids]
     for id_path in id_paths:

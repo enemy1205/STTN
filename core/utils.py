@@ -247,6 +247,35 @@ def cuda_dist(x, y):
     dist = torch.sqrt(F.relu(dist))
     return dist
 
+# Exclude identical-view cases
+def de_diag(acc, each_angle=False):
+    result = np.sum(acc - np.diag(np.diag(acc)), 1) / 10.0
+    if not each_angle:
+        result = np.mean(result)
+    return result
+
+def eval_log_print(acc_CASIA_B,rank):
+    acc_NM_mean, acc_BG_mean, acc_CL_mean = np.mean(acc_CASIA_B[0, :, :, 0]), np.mean(acc_CASIA_B[1, :, :, 0]), np.mean(acc_CASIA_B[2, :, :, 0])
+    print(f"acc_NM_mean:{acc_NM_mean} , acc_BG_mean:{acc_BG_mean} , acc_CL_mean:{acc_CL_mean}")
+    for i in range(rank):
+        print('===Rank-%d (Include identical-view cases)===' % (i + 1))
+        print('NM: %.3f,\tBG: %.3f,\tCL: %.3f' % (
+            np.mean(acc_CASIA_B[0, :, :, i]),
+            np.mean(acc_CASIA_B[1, :, :, i]),
+            np.mean(acc_CASIA_B[2, :, :, i])))
+    for i in range(rank):
+        print('===Rank-%d (Exclude identical-view cases)===' % (i + 1))
+        print('NM: %.3f,\tBG: %.3f,\tCL: %.3f' % (
+            de_diag(acc_CASIA_B[0, :, :, i]),
+            de_diag(acc_CASIA_B[1, :, :, i]),
+            de_diag(acc_CASIA_B[2, :, :, i])))
+    np.set_printoptions(precision=2, floatmode='fixed')
+    for i in range(rank):
+        print('===Rank-%d of each angle (Exclude identical-view cases)===' % (i + 1))
+        print('NM:', de_diag(acc_CASIA_B[0, :, :, i], True))
+        print('BG:', de_diag(acc_CASIA_B[1, :, :, i], True))
+        print('CL:', de_diag(acc_CASIA_B[2, :, :, i], True))
+
 
 # ##############################################
 # ##############################################
